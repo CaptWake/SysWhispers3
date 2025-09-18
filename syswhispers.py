@@ -323,7 +323,7 @@ class SysWhispers(object):
                     base_source_contents = base_source_contents.replace('// JUMP_TO_WOW32Reserved',
                                                                         '        return NULL;')
 
-                msvc_wow64 = '__declspec(naked) BOOL local_is_wow64(void)\n{\n    __asm {\n        mov eax, fs:[0xc0]\n        test eax, eax\n        jne wow64\n        mov eax, 0\n        ret\n        wow64:\n        mov eax, 1\n        ret\n    }\n}\n'
+                msvc_wow64 = 'EXTERN_C __declspec(naked) BOOL local_is_wow64(void)\n{\n    __asm {\n        mov eax, fs:[0xc0]\n        test eax, eax\n        jne wow64\n        mov eax, 0\n        ret\n        wow64:\n        mov eax, 1\n        ret\n    }\n}\n'
                 mingw_wow64 = '__declspec(naked) BOOL local_is_wow64(void)\n{\n    asm(\n        "mov eax, fs:[0xc0] \\n"\n        "test eax, eax \\n"\n        "jne wow64 \\n"\n        "mov eax, 0 \\n"\n        "ret \\n"\n        "wow64: \\n"\n        "mov eax, 1 \\n"\n        "ret \\n"\n    );\n}'
                 wow64_function = ''
                 if self.compiler == Compiler.All:
@@ -354,14 +354,7 @@ class SysWhispers(object):
                 basename_suffix = f'_{basename_suffix}' if '_' in basename else basename_suffix
                 with open(f'{basename}{basename_suffix}-asm.x64.asm', 'wb') as output_asm:
                     output_asm.write(b'.code\n\nEXTERN SW3_GetSyscallNumber: PROC\n\n')
-                    if self.recovery == SyscallRecoveryType.JUMPER:
-                        # We perform a direct jump to the syscall instruction inside ntdll.dll
-                        output_asm.write(b'EXTERN SW3_GetSyscallAddress: PROC\n\n')
-
-                    elif self.recovery == SyscallRecoveryType.JUMPER_RANDOMIZED:
-                        # We perform a direct jump to a syscall instruction of another API
-                        output_asm.write(b'EXTERN SW3_GetRandomSyscallAddress: PROC\n\n')
-
+                    output_asm.write(b'EXTERN SW3_GetSyscallAddress: PROC\n\n')
                     for function_name in function_names:
                         output_asm.write((self._get_function_asm_code_msvc(function_name, Arch.x64) + '\n').encode())
 
@@ -681,39 +674,31 @@ class SysWhispers(object):
             # Generate 64-bit ASM code.
             if self.debug:
                 code += '\tint 3\n'
-            code += '\tmov [rsp +8], rcx          ; Save registers.\n'
-            code += '\tmov [rsp+16], rdx\n'
-            code += '\tmov [rsp+24], r8\n'
-            code += '\tmov [rsp+32], r9\n'
-            code += '\tsub rsp, 28h\n'
-            code += f'\tmov ecx, 0{function_hash:08X}h        ; Load function hash into ECX.\n'
-            if self.recovery in [SyscallRecoveryType.JUMPER, SyscallRecoveryType.JUMPER_RANDOMIZED]:
-                if self.recovery == SyscallRecoveryType.JUMPER_RANDOMIZED:
-                    code += '\tcall SW3_GetRandomSyscallAddress        ; Get a syscall offset from a different api.\n'
-                else:
-                    code += '\tcall SW3_GetSyscallAddress              ; Resolve function hash into syscall offset.\n'
-                code += '\tmov r11, rax                           ; Save the address of the syscall\n'
-                code += f'\tmov ecx, 0{function_hash:08X}h        ; Re-Load function hash into ECX (optional).\n'
-            code += '\tcall SW3_GetSyscallNumber              ; Resolve function hash into syscall number.\n'
-            code += '\tadd rsp, 28h\n'
-            code += '\tmov rcx, [rsp+8]                      ; Restore registers.\n'
-            code += '\tmov rdx, [rsp+16]\n'
-            code += '\tmov r8, [rsp+24]\n'
-            code += '\tmov r9, [rsp+32]\n'
-            code += '\tmov r10, rcx\n'
-
+            code += '\t\tmov [rsp +8], rcx          ; Save registers.\n'
+            code += '\t\tmov [rsp+16], rdx\n'
+            code += '\t\tmov [rsp+24], r8\n'
+            code += '\t\tmov [rsp+32], r9\n'
+            code += '\t\tsub rsp, 28h\n'
+            code += f'\t\tmov ecx, 0{function_hash:08X}h        ; Load function hash into ECX.\n'
+            code += '\t\tcall SW3_GetSyscallAddress              ; Resolve function hash into syscall offset.\n'
+            code += '\t\tmov r11, rax                           ; Save the address of the syscall\n'
+            code += f'\t\tmov ecx, 0{function_hash:08X}h        ; Re-Load function hash into ECX (optional).\n'
+            code += '\t\tcall SW3_GetSyscallNumber              ; Resolve function hash into syscall number.\n'
+            code += '\t\tadd rsp, 28h\n'
+            code += '\t\tmov rcx, [rsp+8]                      ; Restore registers.\n'
+            code += '\t\tmov rdx, [rsp+16]\n'
+            code += '\t\tmov r8, [rsp+24]\n'
+            code += '\t\tmov r9, [rsp+32]\n'
+            code += '\t\tmov r10, rcx\n'
             if self.debug:
-                code += '\tint 3\n'
+                code += '\t\tint 3\n'
 
-            if self.recovery in [SyscallRecoveryType.JUMPER, SyscallRecoveryType.JUMPER_RANDOMIZED]:
-                code += '\tjmp r11                                ; Jump to -> Invoke system call.\n'
-            elif self.recovery == SyscallRecoveryType.EGG_HUNTER:
-                for x in self.egg + self.egg:
-                    code += f'\tDB {x[2:]}h                     ; "{chr(int(x, 16)) if int(x, 16) != 0 else str(0)}"\n'
-                code += '\tret\n'
-            elif self.recovery == SyscallRecoveryType.EMBEDDED:
-                code += f'\t{self.syscall_instruction}                    ; Invoke system call.\n'
-                code += '\tret\n'
+            code += '\t\ttest r11, r11\n'
+            code += f'\t\tjnz jump_to_syscall_{function_hash:08X}\n' 
+            code += f'\t\t{self.syscall_instruction}                    ; Invoke system call.\n'
+            code += '\t\tret\n'
+            code += f'\tjump_to_syscall_{function_hash:08X}:\n' 
+            code += '\t\tjmp r11                                ; Jump to -> Invoke system call.\n'
         else:
             # x32 Prolog
             code += '\t\tpush ebp\n'

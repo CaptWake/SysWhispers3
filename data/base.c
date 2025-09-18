@@ -40,14 +40,9 @@ DWORD SW3_HashSyscall(PCSTR FunctionName)
     return Hash;
 }
 
-#ifndef JUMPER
 PVOID SC_Address(PVOID NtApiAddress)
 {
-    return NULL;
-}
-#else
-PVOID SC_Address(PVOID NtApiAddress)
-{
+#if defined(JUMPER) || defined(RANDOM_JUMPER)
     DWORD searchLimit = 512;
     PVOID SyscallAddress;
 
@@ -120,10 +115,9 @@ PVOID SC_Address(PVOID NtApiAddress)
 #ifdef DEBUG
     printf("Syscall Opcodes not found!\n");
 #endif
-
+#endif // end of JUMPER or RANDOM_JUMPER
     return NULL;
 }
-#endif
 
 
 BOOL SW3_PopulateSyscallList()
@@ -239,6 +233,15 @@ EXTERN_C PVOID SW3_GetSyscallAddress(DWORD FunctionHash)
     // Ensure SW3_SyscallList is populated.
     if (!SW3_PopulateSyscallList()) return NULL;
 
+#ifdef RANDOM_JUMPER
+    DWORD index = ((DWORD) rand()) % SW3_SyscallList.Count;
+    while (FunctionHash == SW3_SyscallList.Entries[index].Hash){
+        // Spoofing the syscall return address
+        index = ((DWORD) rand()) % SW3_SyscallList.Count;
+    }
+
+    return SW3_SyscallList.Entries[index].SyscallAddress;
+#elif JUMPER
     for (DWORD i = 0; i < SW3_SyscallList.Count; i++)
     {
         if (FunctionHash == SW3_SyscallList.Entries[i].Hash)
@@ -246,20 +249,9 @@ EXTERN_C PVOID SW3_GetSyscallAddress(DWORD FunctionHash)
             return SW3_SyscallList.Entries[i].SyscallAddress;
         }
     }
-
     return NULL;
-}
+#else // DIRECT SYSCALLS
+    return NULL;
+#endif
 
-EXTERN_C PVOID SW3_GetRandomSyscallAddress(DWORD FunctionHash)
-{
-    // Ensure SW3_SyscallList is populated.
-    if (!SW3_PopulateSyscallList()) return NULL;
-
-    DWORD index = ((DWORD) rand()) % SW3_SyscallList.Count;
-
-    while (FunctionHash == SW3_SyscallList.Entries[index].Hash){
-        // Spoofing the syscall return address
-        index = ((DWORD) rand()) % SW3_SyscallList.Count;
-    }
-    return SW3_SyscallList.Entries[index].SyscallAddress;
 }
